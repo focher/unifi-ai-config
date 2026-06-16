@@ -69,8 +69,10 @@ pyinstaller --onefile --name unifi-ai-auditor \
   --add-data "frontend:frontend" run.py      # Windows: use "frontend;frontend"
 ```
 
-The resulting binary in `dist/` runs on its build OS (build on macOS for `.app`,
-Windows for `.exe`, Linux for an ELF binary).
+The resulting binary in `dist/` runs on its build OS (macOS, Windows `.exe`, or a
+Linux ELF binary). A local `python build.py` produces a binary for the host CPU only;
+the release CI builds macOS for **both** architectures and `lipo`-merges them into a
+single **universal2 (Apple Silicon + Intel)** binary.
 
 ## Data & security
 
