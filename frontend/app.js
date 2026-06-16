@@ -85,10 +85,19 @@ async function refreshModels() {
       method: "POST",
       body: JSON.stringify({ provider, base_url: $("#l_base").value }),
     });
+    // For local runtimes, once we've actually detected models, show ONLY those
+    // (not the generic suggestions, which are localhost placeholders) so switching
+    // URLs replaces the list rather than accumulating stale entries.
+    const options = local
+      ? (r.installed.length ? r.installed : r.suggested)
+      : [...r.installed, ...r.suggested];
     const dl = $("#modelList"); dl.innerHTML = "";
-    [...r.installed, ...r.suggested].forEach((m) => {
+    options.forEach((m) => {
       const o = document.createElement("option"); o.value = m; dl.appendChild(o);
     });
+    // Nudge the input to drop its cached suggestion popup so the new list shows.
+    const inp = $("#l_model");
+    inp.removeAttribute("list"); void inp.offsetWidth; inp.setAttribute("list", "modelList");
     $("#l_base").placeholder = r.default_base;
     // If the entered URL was repaired (e.g. slash-before-port), reflect the fix.
     if (r.normalized_base && $("#l_base").value && r.normalized_base !== $("#l_base").value.replace(/\/+$/, "")) {
