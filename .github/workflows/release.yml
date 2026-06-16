@@ -59,17 +59,11 @@ jobs:
         with:
           files: out/*
 
-  # ---- macOS: build each arch natively, then lipo into a universal binary ----
-  build-macos-arch:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-14   # Apple Silicon
-            arch: arm64
-          - os: macos-13   # Intel
-            arch: x86_64
-    runs-on: ${{ matrix.os }}
+  # ---- macOS: build arm64 natively + x86_64 under Rosetta on one Apple-Silicon
+  #      runner, then lipo-merge into a universal2 binary. Avoids depending on the
+  #      scarce Intel (macos-13) hosted runners. ----
+  build-macos:
+    runs-on: macos-14   # Apple Silicon; Rosetta 2 is preinstalled
     steps:
       - uses: actions/checkout@v6
 
@@ -77,47 +71,36 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Install dependencies
+      - name: Build arm64 slice (native)
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
+          python build.py
+          mkdir -p slices
+          cp dist/unifi-ai-auditor slices/arm64
+          echo "arm64 slice:"; lipo -archs slices/arm64
+          test "$(lipo -archs slices/arm64)" = "arm64"
 
-      - name: Build standalone binary
-        run: python build.py
+      - uses: astral-sh/setup-uv@v8
 
-      - name: Verify architecture
+      - name: Build x86_64 slice (uv x86_64 Python, via Rosetta)
         run: |
-          lipo -archs dist/unifi-ai-auditor
-          test "$(lipo -archs dist/unifi-ai-auditor)" = "${{ matrix.arch }}"
-          mkdir -p out
-          cp dist/unifi-ai-auditor "out/unifi-ai-auditor-macos-${{ matrix.arch }}"
+          uv python install cpython-3.13-macos-x86_64
+          uv venv --python cpython-3.13-macos-x86_64 .venv-x64
+          uv pip install --python .venv-x64 -r requirements.txt pyinstaller
+          .venv-x64/bin/python build.py
+          cp dist/unifi-ai-auditor slices/x86_64
+          echo "x86_64 slice:"; lipo -archs slices/x86_64
+          test "$(lipo -archs slices/x86_64)" = "x86_64"
 
-      - uses: actions/upload-artifact@v7
-        with:
-          name: macos-${{ matrix.arch }}
-          path: out/*
-
-  macos-universal:
-    needs: build-macos-arch
-    runs-on: macos-latest
-    steps:
-      - uses: actions/download-artifact@v8
-        with:
-          pattern: macos-*
-          path: arch
-          merge-multiple: true
-
-      - name: Create universal2 binary
+      - name: Merge universal2 binary
         run: |
           mkdir -p out
-          lipo -create \
-            arch/unifi-ai-auditor-macos-arm64 \
-            arch/unifi-ai-auditor-macos-x86_64 \
-            -output out/unifi-ai-auditor-macos
+          lipo -create slices/arm64 slices/x86_64 -output out/unifi-ai-auditor-macos
           chmod +x out/unifi-ai-auditor-macos
-          echo "Architectures in final binary:"
-          lipo -archs out/unifi-ai-auditor-macos
+          echo "Final architectures:"; lipo -archs out/unifi-ai-auditor-macos
           file out/unifi-ai-auditor-macos
+          test "$(lipo -archs out/unifi-ai-auditor-macos)" = "x86_64 arm64"
 
       - uses: actions/upload-artifact@v7
         with:
