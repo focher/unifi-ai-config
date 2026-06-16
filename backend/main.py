@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import analyzer
+from . import __version__, analyzer
 from .llm import providers
 from .models import AppSettings, Disposition, LLMProvider, LLMSettings, Snapshot
 from .storage import store
@@ -32,7 +32,12 @@ def _ndjson(events: Iterator[dict]) -> StreamingResponse:
             yield json.dumps(ev) + "\n"
     return StreamingResponse(gen(), media_type="application/x-ndjson")
 
-app = FastAPI(title="UniFi AI Config Auditor")
+app = FastAPI(title="UniFi AI Config Auditor", version=__version__)
+
+
+@app.get("/api/version")
+def get_version() -> dict:
+    return {"version": __version__}
 
 
 # The server binds to loopback and holds live controller credentials, so only

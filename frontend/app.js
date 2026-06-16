@@ -489,6 +489,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) =>
 
 // ---------- init ----------
 (async function init() {
+  try { const v = await api("/api/version"); $("#appVersion").textContent = "v" + v.version; } catch {}
   await loadSnapshots();
   const list = await loadResultList();
   if (list && list.length) {
