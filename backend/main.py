@@ -172,16 +172,28 @@ def collect_stream(body: MFABody = MFABody()) -> StreamingResponse:
                        "count": n, "index": idx, "total": total,
                        "ok": n != -1}
 
-            snap = Snapshot(
-                id=str(uuid.uuid4()),
-                site=s.unifi.site,
-                data={"config": config, "traffic": traffic, "site": s.unifi.site},
-                object_counts=counts,
-            )
-            store.save_snapshot(snap)
+            # Building + writing the snapshot can take a moment on large networks and
+            # can fail (e.g. disk/serialization); surface both so the UI never hangs.
+            yield {"type": "saving"}
+            try:
+                snap = Snapshot(
+                    id=str(uuid.uuid4()),
+                    site=s.unifi.site,
+                    data={"config": config, "traffic": traffic, "site": s.unifi.site},
+                    object_counts=counts,
+                )
+                store.save_snapshot(snap)
+            except Exception as exc:  # noqa: BLE001
+                yield {"type": "error", "message": f"Failed to save snapshot: {exc}"}
+                return
+            total_objects = sum(v for v in counts.values() if v > 0)
             yield {"type": "snapshot", "snapshot": {
                 "id": snap.id, "created_at": snap.created_at.isoformat(),
-                "site": snap.site, "object_counts": counts}}
+                "site": snap.site, "object_counts": counts,
+                "total_objects": total_objects}}
+            yield {"type": "done"}
+        except Exception as exc:  # noqa: BLE001 - never let the stream die silently
+            yield {"type": "error", "message": f"Collection failed: {exc}"}
         finally:
             client.close()
 
@@ -267,18 +279,24 @@ def snapshot_download(snapshot_id: str, redact: bool = False):
 
 # --------------------------- step 2: analysis (streaming, chunked) ---------------------------
 
+class AnalyzeBody(BaseModel):
+    # Section keys to analyze. Empty/omitted => analyze everything in the snapshot.
+    selected: list[str] = []
+
+
 @app.post("/api/analyze/{snapshot_id}")
-def analyze_stream(snapshot_id: str) -> StreamingResponse:
-    """Step 2 — run the chunked LLM analysis over a stored snapshot, streaming
-    per-chunk progress, and persist the result."""
+def analyze_stream(snapshot_id: str, body: AnalyzeBody = AnalyzeBody()) -> StreamingResponse:
+    """Step 2 — run the chunked LLM analysis over the selected sections of a stored
+    snapshot, streaming per-chunk progress, and persist the result."""
     snap = store.get_snapshot(snapshot_id)
     if not snap:
         raise HTTPException(404, "Snapshot not found")
     s = store.load_settings()
+    selected = set(body.selected) if body.selected else None
 
     def events() -> Iterator[dict]:
         try:
-            for ev in analyzer.analyze_streaming(snap.data, s.llm, snapshot_id):
+            for ev in analyzer.analyze_streaming(snap.data, s.llm, snapshot_id, selected):
                 if ev["type"] == "result":
                     result = analyzer.AnalysisResult.model_validate(ev["result"])
                     store.save_result(result)

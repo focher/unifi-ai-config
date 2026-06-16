@@ -164,13 +164,14 @@ async function runCollect(mfaToken) {
   const grid = $("#collectProgress"); grid.classList.remove("hidden");
   $("#collectStatus").textContent = ""; $("#collectStatus").className = "status";
   const steps = {};
-  let needMfa = false;
+  let needMfa = false, finished = false, errored = false;
   try {
     await streamNdjson("/api/collect", mfaToken ? { mfa_token: mfaToken } : {}, (ev) => {
       if (ev.type === "mfa_required") {
         needMfa = true;
         $("#collectStatus").textContent = ev.message;
       } else if (ev.type === "error") {
+        errored = true;
         $("#collectStatus").textContent = ev.message; $("#collectStatus").className = "status err";
       } else if (ev.type === "start") {
         grid.innerHTML = "";
@@ -190,7 +191,10 @@ async function runCollect(mfaToken) {
         el.querySelector(".ico").textContent = !ok ? "✕" : "✓";
         el.querySelector(".cnt").textContent =
           ev.count === -1 ? "n/a" : `${ev.count}`;
+      } else if (ev.type === "saving") {
+        $("#collectStatus").innerHTML = '<span class="spinner"></span> Saving snapshot…';
       } else if (ev.type === "snapshot") {
+        finished = true;
         $("#collectStatus").textContent =
           `Collected ✓  ${ev.snapshot.total_objects ?? ""} objects saved as a snapshot.`;
         $("#collectStatus").className = "status ok";
@@ -201,6 +205,13 @@ async function runCollect(mfaToken) {
       const code = prompt("Enter the current 6-digit MFA code:");
       if (code) { btn.disabled = false; return runCollect(code.trim()); }
     }
+    // The stream ended without a completion/error/MFA signal — don't leave the UI
+    // frozen on "Collecting N/N"; tell the user what happened.
+    if (!finished && !errored && !needMfa) {
+      $("#collectStatus").textContent =
+        "Collection ended unexpectedly before the snapshot was saved. Check the controller connection and try again.";
+      $("#collectStatus").className = "status err";
+    }
   } catch (e) {
     $("#collectStatus").textContent = e.message; $("#collectStatus").className = "status err";
   } finally { btn.disabled = false; }
@@ -208,22 +219,18 @@ async function runCollect(mfaToken) {
 
 async function loadSnapshots(selectId) {
   const snaps = await api("/api/snapshots");
-  const sel = $("#snapshotSelect");
   const dataSel = $("#dataSnapshotSelect");
-  sel.innerHTML = ""; dataSel.innerHTML = "";
+  dataSel.innerHTML = "";
   if (!snaps.length) {
-    const o = document.createElement("option"); o.textContent = "— no snapshots yet —"; o.disabled = true;
-    sel.appendChild(o);
     $("#collectedData").classList.add("hidden");
     return;
   }
   snaps.forEach((s) => {
     const label = `${new Date(s.created_at).toLocaleString()} · ${s.total_objects} objects`;
-    const o = document.createElement("option"); o.value = s.id; o.textContent = label; sel.appendChild(o);
-    const o2 = document.createElement("option"); o2.value = s.id; o2.textContent = label; dataSel.appendChild(o2);
+    const o = document.createElement("option"); o.value = s.id; o.textContent = label; dataSel.appendChild(o);
   });
   const chosen = selectId || snaps[0].id;
-  sel.value = chosen; dataSel.value = chosen;
+  dataSel.value = chosen;
   $("#collectedData").classList.remove("hidden");
   loadSections(chosen);
 }
@@ -246,16 +253,27 @@ $("#redactToggle").addEventListener("change", () => {
     browseSection(currentDataSnapshot, openSection);
 });
 
+// Section selection for analysis (keys), plus a cache of section metadata for the
+// current snapshot so we can render selection chips with labels/groups.
+let sectionsCache = [];
+const selectedSections = new Set();
+
 async function loadSections(snapshotId) {
   currentDataSnapshot = snapshotId;
   const box = $("#sectionList"); box.innerHTML = "";
   let sections;
   try { sections = await api(`/api/snapshots/${snapshotId}/sections`); }
   catch (e) { box.innerHTML = `<div class="muted">${esc(e.message)}</div>`; return; }
+  sectionsCache = sections;
+  // Default: select every section that actually returned data (skip errored/empty).
+  selectedSections.clear();
+  sections.forEach((s) => { if (!s.error && s.count > 0) selectedSections.add(s.key); });
+
   sections.forEach((s) => {
     const row = document.createElement("div");
     const cls = s.error ? "err" : s.count === 0 ? "empty" : "";
     row.className = "section-row " + cls;
+    row.dataset.key = s.key;
     const cnt = s.error ? "n/a" : `${s.count}`;
     row.innerHTML = `
       <span class="grp ${s.group}"></span>
@@ -265,14 +283,60 @@ async function loadSections(snapshotId) {
         <button data-act="browse">Browse</button>
         <button data-act="copy">Copy</button>
         <button data-act="download">Download</button>
+        <button data-act="add" class="add">Add</button>
       </span>`;
     row.querySelector('[data-act="browse"]').addEventListener("click", () => browseSection(snapshotId, s));
     row.querySelector('[data-act="copy"]').addEventListener("click", (e) => copySection(snapshotId, s, e.target));
     row.querySelector('[data-act="download"]').addEventListener("click", () =>
       window.location = `/api/snapshots/${snapshotId}/section/${s.key}?download=true&${redactQS()}`);
+    row.querySelector('[data-act="add"]').addEventListener("click", () => toggleSection(s.key));
     box.appendChild(row);
   });
+  renderSelection();
 }
+
+const sectionMeta = (key) => sectionsCache.find((s) => s.key === key);
+
+function toggleSection(key) {
+  if (selectedSections.has(key)) selectedSections.delete(key);
+  else selectedSections.add(key);
+  renderSelection();
+}
+
+function renderSelection() {
+  // Update the Add buttons in the section list.
+  $$("#sectionList .section-row").forEach((row) => {
+    const key = row.dataset.key;
+    const btn = row.querySelector('[data-act="add"]');
+    if (!btn) return;
+    const on = selectedSections.has(key);
+    btn.textContent = on ? "Added ✓" : "Add";
+    btn.classList.toggle("added", on);
+  });
+  // Render the selection chips in the Analyze panel.
+  const box = $("#analyzeSelection"); box.innerHTML = "";
+  const keys = sectionsCache.map((s) => s.key).filter((k) => selectedSections.has(k));
+  $("#selCount").textContent = keys.length;
+  if (!keys.length) {
+    box.innerHTML = '<span class="empty-sel">No sections selected — add sections from the Collect panel above.</span>';
+  } else {
+    keys.forEach((k) => {
+      const s = sectionMeta(k); if (!s) return;
+      const chip = document.createElement("span");
+      chip.className = "sel-chip";
+      chip.innerHTML = `<span class="dot ${s.group}"></span>${esc(s.label)} <button title="Remove">✕</button>`;
+      chip.querySelector("button").addEventListener("click", () => toggleSection(k));
+      box.appendChild(chip);
+    });
+  }
+  $("#analyzeBtn").disabled = keys.length === 0;
+}
+
+$("#addAllBtn").addEventListener("click", () => {
+  sectionsCache.forEach((s) => { if (!s.error) selectedSections.add(s.key); });
+  renderSelection();
+});
+$("#removeAllBtn").addEventListener("click", () => { selectedSections.clear(); renderSelection(); });
 
 async function fetchSection(snapshotId, key) {
   const r = await api(`/api/snapshots/${snapshotId}/section/${key}?${redactQS()}`);
@@ -325,15 +389,19 @@ $("#dataModal").addEventListener("click", (e) => { if (e.target.id === "dataModa
 
 // ---------- STEP 2: analyze ----------
 $("#analyzeBtn").addEventListener("click", async () => {
-  const id = $("#snapshotSelect").value;
+  const id = currentDataSnapshot;
   if (!id) { $("#analyzeStatus").textContent = "Collect a snapshot first."; $("#analyzeStatus").className = "status err"; return; }
+  const selected = [...selectedSections];
+  if (!selected.length) {
+    $("#analyzeStatus").textContent = "Add at least one section to analyze."; $("#analyzeStatus").className = "status err"; return;
+  }
   const btn = $("#analyzeBtn"); btn.disabled = true;
   const list = $("#analyzeProgress"); list.classList.remove("hidden"); list.innerHTML = "";
   $("#analyzeStatus").innerHTML = '<span class="spinner"></span> Analyzing…';
   $("#analyzeStatus").className = "status";
   const chunks = {};
   try {
-    await streamNdjson(`/api/analyze/${id}`, {}, (ev) => {
+    await streamNdjson(`/api/analyze/${id}`, { selected }, (ev) => {
       if (ev.type === "chunk_start") {
         const el = document.createElement("div");
         el.className = "chunk active"; el.id = "ck_" + ev.key;

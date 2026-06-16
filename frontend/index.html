@@ -37,6 +37,7 @@
             </label>
             <select id="dataSnapshotSelect" title="Snapshot to browse"></select>
             <button id="downloadAllBtn" class="small">⬇ Download all (JSON)</button>
+            <button id="addAllBtn" class="small">Add all to analysis →</button>
           </div>
           <div id="sectionList" class="section-list"></div>
         </div>
@@ -47,9 +48,13 @@
         <div class="step-head">
           <span class="step-num">2</span>
           <h2>Analyze with LLM</h2>
-          <select id="snapshotSelect"></select>
-          <button id="analyzeBtn" class="primary">🔍 Analyze snapshot</button>
+          <button id="analyzeBtn" class="primary">🔍 Analyze selected</button>
         </div>
+        <div class="analyze-sel-head">
+          <span class="muted">Sections to analyze (<span id="selCount">0</span>):</span>
+          <button id="removeAllBtn" class="small">Remove all</button>
+        </div>
+        <div id="analyzeSelection" class="sel-list"></div>
         <div id="analyzeProgress" class="chunk-list hidden"></div>
         <div id="analyzeStatus" class="status"></div>
       </div>

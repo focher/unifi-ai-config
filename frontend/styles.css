@@ -72,6 +72,21 @@ button.small { padding: 5px 10px; font-size: 12px; }
 .section-row .acts { display: flex; gap: 4px; }
 .section-row .acts button { padding: 3px 8px; font-size: 12px; }
 .section-row.err .cnt { color: var(--crit); }
+.section-row .add { min-width: 70px; }
+.section-row .add.added { background: rgba(54,211,153,.16); border-color: var(--ok); color: var(--ok); }
+
+/* analyze selection list */
+.analyze-sel-head { display: flex; align-items: center; gap: 12px; margin: 10px 0 8px; }
+.analyze-sel-head .muted { flex: 1; }
+.sel-list { display: flex; flex-wrap: wrap; gap: 6px; min-height: 20px; }
+.sel-list .empty-sel { color: var(--muted); font-size: 13px; }
+.sel-chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 8px 5px 10px;
+  border-radius: 16px; background: var(--panel2); border: 1px solid var(--border); font-size: 12px; }
+.sel-chip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+.sel-chip .dot.traffic { background: var(--low); }
+.sel-chip button { background: none; border: none; color: var(--muted); padding: 0 2px; font-size: 14px;
+  cursor: pointer; line-height: 1; }
+.sel-chip button:hover { color: var(--crit); }
 
 .data-head { display: flex; align-items: center; gap: 12px; }
 .data-head h3 { flex: 1; margin: 0; }

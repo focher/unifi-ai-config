@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, Optional
 
 from .llm import providers
 from .models import (
@@ -251,8 +251,26 @@ def analyze_chunk(collected: dict[str, Any], chunk: dict[str, Any], llm: LLMSett
     return issues
 
 
+def _select_chunks(selected_keys: Optional[set[str]]) -> list[dict[str, Any]]:
+    """Return the analysis chunks restricted to the selected section keys.
+
+    Each chunk keeps only its selected config/traffic sections; chunks left with
+    nothing are dropped. selected_keys=None means "everything" (backward compatible).
+    """
+    if selected_keys is None:
+        return ANALYSIS_CHUNKS
+    out: list[dict[str, Any]] = []
+    for chunk in ANALYSIS_CHUNKS:
+        cfg = [k for k in chunk["config"] if k in selected_keys]
+        trf = [k for k in chunk["traffic"] if k in selected_keys]
+        if cfg or trf:
+            out.append({**chunk, "config": cfg, "traffic": trf})
+    return out
+
+
 def analyze_streaming(
-    collected: dict[str, Any], llm: LLMSettings, snapshot_id: str = ""
+    collected: dict[str, Any], llm: LLMSettings, snapshot_id: str = "",
+    selected_keys: Optional[set[str]] = None,
 ) -> Iterator[dict[str, Any]]:
     """Yield progress events per chunk, then a final 'result' event.
 
@@ -263,8 +281,12 @@ def analyze_streaming(
       {"type":"result","result": <AnalysisResult dict>}
     """
     all_issues: list[Issue] = []
-    total = len(ANALYSIS_CHUNKS)
-    for idx, chunk in enumerate(ANALYSIS_CHUNKS, start=1):
+    chunks = _select_chunks(selected_keys)
+    total = len(chunks)
+    if total == 0:
+        yield {"type": "error", "message": "No sections selected for analysis."}
+        return
+    for idx, chunk in enumerate(chunks, start=1):
         yield {"type": "chunk_start", "key": chunk["key"], "label": chunk["label"],
                "index": idx, "total": total}
         try:
