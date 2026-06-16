@@ -1,0 +1,60 @@
+name: Build & Release
+
+# Builds standalone binaries for macOS, Windows, and Linux whenever a version
+# tag (v*) is pushed, and attaches them to the GitHub Release.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            artifact: unifi-ai-auditor-macos
+            ext: ""
+          - os: windows-latest
+            artifact: unifi-ai-auditor-windows
+            ext: ".exe"
+          - os: ubuntu-latest
+            artifact: unifi-ai-auditor-linux
+            ext: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Build standalone binary
+        run: python build.py
+
+      - name: Rename artifact
+        shell: bash
+        run: |
+          mkdir -p out
+          cp "dist/unifi-ai-auditor${{ matrix.ext }}" "out/${{ matrix.artifact }}${{ matrix.ext }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: out/*
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/*

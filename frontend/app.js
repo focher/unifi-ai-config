@@ -1,0 +1,397 @@
+// UniFi AI Config Auditor — frontend controller
+const $ = (s) => document.querySelector(s);
+const $$ = (s) => document.querySelectorAll(s);
+const api = async (url, opts = {}) => {
+  const r = await fetch(url, { headers: { "Content-Type": "application/json" }, ...opts });
+  if (!r.ok) {
+    let detail = r.statusText;
+    try { detail = (await r.json()).detail || detail; } catch {}
+    const err = new Error(detail); err.status = r.status; throw err;
+  }
+  return r.status === 204 ? null : r.json();
+};
+
+// POST that transparently handles the controller's MFA challenge (HTTP 428):
+// on challenge it prompts for the 6-digit code and retries with it included.
+async function apiMfa(url) {
+  let body = {};
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await api(url, { method: "POST", body: JSON.stringify(body) });
+    } catch (e) {
+      if (e.status !== 428) throw e;
+      const code = prompt(`${e.message}\n\nEnter the current MFA code:`);
+      if (!code) throw new Error("MFA cancelled.");
+      body = { mfa_token: code.trim() };
+    }
+  }
+  throw new Error("MFA failed after multiple attempts.");
+}
+
+let currentResult = null;
+
+// ---------- navigation ----------
+function showView(name) {
+  $$(".view").forEach((v) => v.classList.remove("active"));
+  $(`#view-${name}`).classList.add("active");
+  $$("nav button").forEach((b) => b.classList.toggle("active", b.dataset.view === name));
+}
+document.addEventListener("click", (e) => {
+  const v = e.target.dataset?.view;
+  if (v) { e.preventDefault(); showView(v); if (v === "settings") loadSettings(); }
+});
+
+// ---------- settings ----------
+async function loadSettings() {
+  const s = await api("/api/settings");
+  $("#u_host").value = s.unifi.host; $("#u_port").value = s.unifi.port;
+  $("#u_user").value = s.unifi.username; $("#u_pass").value = s.unifi.password || "";
+  $("#u_site").value = s.unifi.site; $("#u_unifios").checked = s.unifi.is_unifi_os;
+  $("#u_verify").checked = s.unifi.verify_ssl;
+  $("#l_provider").value = s.llm.provider; $("#l_model").value = s.llm.model;
+  $("#l_key").value = s.llm.api_key || ""; $("#l_base").value = s.llm.base_url || "";
+  $("#l_temp").value = s.llm.temperature; $("#l_maxtok").value = s.llm.max_output_tokens;
+  updateProviderUI();
+  refreshModels();
+}
+
+function collectSettings() {
+  return {
+    unifi: {
+      host: $("#u_host").value, port: Number($("#u_port").value),
+      username: $("#u_user").value, password: $("#u_pass").value,
+      site: $("#u_site").value, is_unifi_os: $("#u_unifios").checked,
+      verify_ssl: $("#u_verify").checked,
+    },
+    llm: {
+      provider: $("#l_provider").value, model: $("#l_model").value,
+      api_key: $("#l_key").value, base_url: $("#l_base").value,
+      temperature: Number($("#l_temp").value), max_output_tokens: Number($("#l_maxtok").value),
+    },
+  };
+}
+
+function updateProviderUI() {
+  const local = ["ollama", "lmstudio"].includes($("#l_provider").value);
+  $("#apiKeyWrap").style.opacity = local ? ".5" : "1";
+}
+
+async function refreshModels() {
+  const provider = $("#l_provider").value;
+  $("#modelStatus").textContent = "Detecting…";
+  try {
+    const r = await api("/api/llm/models", {
+      method: "POST",
+      body: JSON.stringify({ provider, base_url: $("#l_base").value }),
+    });
+    const dl = $("#modelList"); dl.innerHTML = "";
+    [...r.installed, ...r.suggested].forEach((m) => {
+      const o = document.createElement("option"); o.value = m; dl.appendChild(o);
+    });
+    $("#l_base").placeholder = r.default_base;
+    $("#modelStatus").textContent = r.installed.length
+      ? `${r.installed.length} local model(s) detected` : "";
+  } catch (e) { $("#modelStatus").textContent = ""; }
+}
+
+$("#l_provider").addEventListener("change", () => { updateProviderUI(); refreshModels(); });
+$("#refreshModels").addEventListener("click", refreshModels);
+
+$("#saveBtn").addEventListener("click", async () => {
+  $("#saveStatus").textContent = "Saving…"; $("#saveStatus").className = "status";
+  try {
+    await api("/api/settings", { method: "POST", body: JSON.stringify(collectSettings()) });
+    $("#saveStatus").textContent = "Saved ✓"; $("#saveStatus").className = "status ok";
+  } catch (e) { $("#saveStatus").textContent = e.message; $("#saveStatus").className = "status err"; }
+});
+
+$("#testBtn").addEventListener("click", async () => {
+  const btn = $("#testBtn");
+  btn.disabled = true;
+  $("#testStatus").innerHTML = '<span class="spinner"></span> Saving settings…';
+  $("#testStatus").className = "status";
+  try {
+    if (!$("#u_user").value || !$("#u_pass").value) {
+      throw new Error("Enter a username and password first.");
+    }
+    await api("/api/settings", { method: "POST", body: JSON.stringify(collectSettings()) });
+    $("#testStatus").innerHTML = '<span class="spinner"></span> Connecting to controller…';
+    const r = await apiMfa("/api/unifi/test");
+    $("#testStatus").textContent = `Connected ✓  Sites: ${r.sites.join(", ")}`;
+    $("#testStatus").className = "status ok";
+  } catch (e) {
+    $("#testStatus").textContent = e.message || "Connection failed.";
+    $("#testStatus").className = "status err";
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+function setStatus(html, cls = "") { const s = $("#status"); s.innerHTML = html; s.className = "status " + cls; }
+
+// Stream newline-delimited JSON from a POST endpoint, invoking onEvent per line.
+async function streamNdjson(url, body, onEvent) {
+  const r = await fetch(url, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+  if (!r.ok) {
+    let detail = r.statusText; try { detail = (await r.json()).detail || detail; } catch {}
+    const e = new Error(detail); e.status = r.status; throw e;
+  }
+  const reader = r.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (line) onEvent(JSON.parse(line));
+    }
+  }
+  if (buf.trim()) onEvent(JSON.parse(buf.trim()));
+}
+
+// ---------- STEP 1: collect ----------
+$("#collectBtn").addEventListener("click", () => runCollect());
+
+async function runCollect(mfaToken) {
+  const btn = $("#collectBtn"); btn.disabled = true;
+  const grid = $("#collectProgress"); grid.classList.remove("hidden");
+  $("#collectStatus").textContent = ""; $("#collectStatus").className = "status";
+  const steps = {};
+  let needMfa = false;
+  try {
+    await streamNdjson("/api/collect", mfaToken ? { mfa_token: mfaToken } : {}, (ev) => {
+      if (ev.type === "mfa_required") {
+        needMfa = true;
+        $("#collectStatus").textContent = ev.message;
+      } else if (ev.type === "error") {
+        $("#collectStatus").textContent = ev.message; $("#collectStatus").className = "status err";
+      } else if (ev.type === "start") {
+        grid.innerHTML = "";
+      } else if (ev.type === "step_start") {
+        const el = document.createElement("div");
+        el.className = "pstep active"; el.id = "ps_" + ev.key;
+        el.innerHTML = `<span class="ico"><span class="spinner"></span></span>
+          <span class="lbl">${esc(ev.label)}</span><span class="cnt"></span>`;
+        grid.appendChild(el); steps[ev.key] = el;
+        $("#collectStatus").innerHTML =
+          `<span class="spinner"></span> Collecting ${ev.index}/${ev.total}…`;
+      } else if (ev.type === "step_done") {
+        const el = steps[ev.key]; if (!el) return;
+        const ok = ev.ok && ev.count >= 0;
+        const empty = ev.count === 0;
+        el.className = "pstep " + (!ok ? "err" : empty ? "warn" : "done");
+        el.querySelector(".ico").textContent = !ok ? "✕" : "✓";
+        el.querySelector(".cnt").textContent =
+          ev.count === -1 ? "n/a" : `${ev.count}`;
+      } else if (ev.type === "snapshot") {
+        $("#collectStatus").textContent =
+          `Collected ✓  ${ev.snapshot.total_objects ?? ""} objects saved as a snapshot.`;
+        $("#collectStatus").className = "status ok";
+        loadSnapshots(ev.snapshot.id);
+      }
+    });
+    if (needMfa) {
+      const code = prompt("Enter the current 6-digit MFA code:");
+      if (code) { btn.disabled = false; return runCollect(code.trim()); }
+    }
+  } catch (e) {
+    $("#collectStatus").textContent = e.message; $("#collectStatus").className = "status err";
+  } finally { btn.disabled = false; }
+}
+
+async function loadSnapshots(selectId) {
+  const snaps = await api("/api/snapshots");
+  const sel = $("#snapshotSelect"); sel.innerHTML = "";
+  if (!snaps.length) {
+    const o = document.createElement("option"); o.textContent = "— no snapshots yet —"; o.disabled = true;
+    sel.appendChild(o); return;
+  }
+  snaps.forEach((s) => {
+    const o = document.createElement("option"); o.value = s.id;
+    o.textContent = `${new Date(s.created_at).toLocaleString()} · ${s.total_objects} objects`;
+    sel.appendChild(o);
+  });
+  if (selectId) sel.value = selectId;
+}
+
+// ---------- STEP 2: analyze ----------
+$("#analyzeBtn").addEventListener("click", async () => {
+  const id = $("#snapshotSelect").value;
+  if (!id) { $("#analyzeStatus").textContent = "Collect a snapshot first."; $("#analyzeStatus").className = "status err"; return; }
+  const btn = $("#analyzeBtn"); btn.disabled = true;
+  const list = $("#analyzeProgress"); list.classList.remove("hidden"); list.innerHTML = "";
+  $("#analyzeStatus").innerHTML = '<span class="spinner"></span> Analyzing…';
+  $("#analyzeStatus").className = "status";
+  const chunks = {};
+  try {
+    await streamNdjson(`/api/analyze/${id}`, {}, (ev) => {
+      if (ev.type === "chunk_start") {
+        const el = document.createElement("div");
+        el.className = "chunk active"; el.id = "ck_" + ev.key;
+        el.innerHTML = `<span class="ico"><span class="spinner"></span></span>
+          <span class="lbl">${esc(ev.label)}</span><span class="res"></span>`;
+        list.appendChild(el); chunks[ev.key] = el;
+        $("#analyzeStatus").innerHTML =
+          `<span class="spinner"></span> Analyzing ${ev.index}/${ev.total}: ${esc(ev.label)}…`;
+      } else if (ev.type === "chunk_done") {
+        const el = chunks[ev.key]; if (!el) return;
+        el.className = "chunk done"; el.querySelector(".ico").textContent = "✓";
+        el.querySelector(".res").textContent =
+          ev.found ? `${ev.found} issue(s)` : "no issues";
+      } else if (ev.type === "chunk_error") {
+        const el = chunks[ev.key]; if (!el) return;
+        el.className = "chunk err"; el.querySelector(".ico").textContent = "✕";
+        el.querySelector(".res").textContent = (ev.error || "").slice(0, 80);
+      } else if (ev.type === "error") {
+        $("#analyzeStatus").textContent = ev.message; $("#analyzeStatus").className = "status err";
+      } else if (ev.type === "result") {
+        $("#analyzeStatus").textContent = `Done — ${ev.result.issues.length} issue(s) found ✓`;
+        $("#analyzeStatus").className = "status ok";
+        loadResultList().then(() => { $("#resultSelect").value = ev.result.id; });
+        renderResult(ev.result);
+      }
+    });
+  } catch (e) {
+    $("#analyzeStatus").textContent = e.message; $("#analyzeStatus").className = "status err";
+  } finally { btn.disabled = false; }
+});
+
+async function loadResultList() {
+  const list = await api("/api/results");
+  const sel = $("#resultSelect"); sel.innerHTML = "";
+  if (!list.length) { $("#empty").classList.remove("hidden"); return; }
+  list.forEach((r) => {
+    const o = document.createElement("option"); o.value = r.id;
+    const c = r.counts;
+    o.textContent = `${new Date(r.created_at).toLocaleString()} · ${r.provider}/${r.model} · ` +
+      `${c.Critical}C ${c.High}H ${c.Medium}M ${c.Low}L`;
+    sel.appendChild(o);
+  });
+  return list;
+}
+
+$("#resultSelect").addEventListener("change", async (e) => {
+  const r = await api(`/api/results/${e.target.value}`);
+  renderResult(r);
+});
+
+function renderResult(result) {
+  currentResult = result;
+  $("#empty").classList.add("hidden");
+  const counts = { Critical: 0, High: 0, Medium: 0, Low: 0 };
+  result.issues.forEach((i) => counts[i.severity]++);
+  const bar = $("#summaryBar"); bar.classList.remove("hidden"); bar.innerHTML = "";
+  ["Critical", "High", "Medium", "Low"].forEach((sev) => {
+    const c = document.createElement("div"); c.className = "chip";
+    c.innerHTML = `<span class="dot ${sev}"></span>${counts[sev]} ${sev}`;
+    bar.appendChild(c);
+  });
+  $("#summaryText").textContent = result.summary || "";
+  renderIssues();
+}
+
+function renderIssues() {
+  if (!currentResult) return;
+  const sevOn = new Set([...$$(".sev-filter:checked")].map((c) => c.value));
+  const hideResolved = $("#hideResolved").checked;
+  const box = $("#issues"); box.innerHTML = "";
+  const visible = currentResult.issues.filter((i) =>
+    sevOn.has(i.severity) && !(hideResolved && i.disposition !== "Open"));
+  if (!visible.length) { box.innerHTML = '<div class="empty">No issues match the current filters.</div>'; return; }
+  visible.forEach((i) => {
+    const el = document.createElement("div");
+    el.className = `issue ${i.severity}` + (i.disposition !== "Open" ? " resolved" : "");
+    const disp = i.disposition !== "Open" ? `<span class="disp ${i.disposition}">● ${i.disposition}</span>` : "";
+    el.innerHTML = `
+      <div class="issue-head">
+        <span class="badge ${i.severity}">${i.severity}</span>
+        <span class="issue-title">${esc(i.title)}</span>
+        <span class="badge cat">${esc(i.category)}</span>
+        ${disp}
+      </div>
+      <div class="issue-desc">${esc(i.description).slice(0, 220)}</div>`;
+    el.addEventListener("click", () => openModal(i));
+    box.appendChild(el);
+  });
+}
+$$(".sev-filter").forEach((c) => c.addEventListener("change", renderIssues));
+$("#hideResolved").addEventListener("change", renderIssues);
+
+// ---------- issue detail / triage ----------
+function openModal(issue) {
+  const rem = issue.remediation || {};
+  const steps = (rem.manual_steps || []).map((s) => `<li>${esc(s)}</li>`).join("");
+  const objs = (issue.affected_objects || []).map((o) => `<span class="tag">${esc(o)}</span>`).join("");
+  const auto = rem.automation;
+  $("#modalContent").innerHTML = `
+    <h3><span class="badge ${issue.severity}">${issue.severity}</span> ${esc(issue.title)}</h3>
+    <div class="tags"><span class="tag">${esc(issue.category)}</span>${objs}</div>
+    <div class="section"><h4>Description</h4><div>${esc(issue.description)}</div></div>
+    ${issue.evidence ? `<div class="section"><h4>Evidence</h4><pre>${esc(issue.evidence)}</pre></div>` : ""}
+    <div class="section"><h4>Remediation</h4>
+      <div>${esc(rem.summary || "")}</div>
+      ${steps ? `<ul>${steps}</ul>` : ""}
+      ${auto ? `<pre>Automated: ${esc(auto.method)} ${esc(auto.endpoint)}\n${esc(JSON.stringify(auto.payload, null, 2))}</pre>` : ""}
+    </div>
+    <div class="section"><h4>Note</h4>
+      <input class="note-input" id="noteInput" placeholder="Optional note" value="${esc(issue.note || "")}" /></div>
+    <div class="actions">
+      <button class="ignore" data-disp="Ignored">Ignore</button>
+      <button class="later" data-disp="Later">Leave for later</button>
+      <button class="remediate" data-disp="Remediate">Mark Remediated</button>
+      ${auto ? `<button class="remediate" id="autoFix">⚡ Auto-Remediate</button>` : ""}
+    </div>
+    <span id="modalStatus" class="status"></span>`;
+
+  $$("#modalContent .actions button[data-disp]").forEach((b) =>
+    b.addEventListener("click", () => setDisposition(issue, b.dataset.disp)));
+  if (auto) $("#autoFix").addEventListener("click", () => autoRemediate(issue));
+  $("#modal").classList.remove("hidden");
+}
+$("#modalClose").addEventListener("click", () => $("#modal").classList.add("hidden"));
+$("#modal").addEventListener("click", (e) => { if (e.target.id === "modal") $("#modal").classList.add("hidden"); });
+
+async function setDisposition(issue, disposition) {
+  const note = $("#noteInput")?.value || "";
+  $("#modalStatus").textContent = "Saving…";
+  try {
+    const updated = await api(
+      `/api/results/${currentResult.id}/issues/${issue.id}/disposition`,
+      { method: "POST", body: JSON.stringify({ disposition, note }) });
+    currentResult = updated; renderIssues();
+    $("#modal").classList.add("hidden");
+  } catch (e) { $("#modalStatus").textContent = e.message; $("#modalStatus").className = "status err"; }
+}
+
+async function autoRemediate(issue) {
+  if (!confirm("This will push a configuration change to your UniFi controller. Continue?")) return;
+  $("#modalStatus").textContent = "Applying…";
+  try {
+    await api(`/api/results/${currentResult.id}/issues/${issue.id}/remediate`, { method: "POST" });
+    const updated = await api(`/api/results/${currentResult.id}`);
+    currentResult = updated; renderIssues();
+    $("#modalStatus").textContent = "Applied ✓"; $("#modalStatus").className = "status ok";
+    setTimeout(() => $("#modal").classList.add("hidden"), 900);
+  } catch (e) { $("#modalStatus").textContent = e.message; $("#modalStatus").className = "status err"; }
+}
+
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+// ---------- init ----------
+(async function init() {
+  await loadSnapshots();
+  const list = await loadResultList();
+  if (list && list.length) {
+    const r = await api(`/api/results/${list[0].id}`);
+    $("#resultSelect").value = list[0].id;
+    renderResult(r);
+  }
+})();
