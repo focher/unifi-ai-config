@@ -34,9 +34,17 @@ def main() -> None:
         if build_arch in ("arm64", "x86_64"):
             launcher = ["arch", f"-{build_arch}"]
 
+    # Platform-native app icon (ignored by PyInstaller on Linux).
+    icon_opts: list[str] = []
+    if sys.platform == "darwin" and os.path.exists("assets/icon.icns"):
+        icon_opts = ["--icon", "assets/icon.icns"]
+    elif os.name == "nt" and os.path.exists("assets/icon.ico"):
+        icon_opts = ["--icon", "assets/icon.ico"]
+
     opts = [
         "--noconfirm", "--clean", "--onefile",
         "--name", name,
+        *icon_opts,
         "--add-data", f"frontend{SEP}frontend",
         # FastAPI/uvicorn pull these in dynamically; pin them so the bundle is complete.
         "--collect-submodules", "uvicorn",
