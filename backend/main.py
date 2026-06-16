@@ -123,10 +123,13 @@ class ModelQuery(BaseModel):
 @app.post("/api/llm/models")
 def list_models(q: ModelQuery) -> dict:
     suggested = providers.SUGGESTED_MODELS.get(q.provider, [])
-    installed = []
+    installed: list[str] = []
+    error = ""
+    normalized = providers.normalize_base_url(q.base_url)
     if q.provider in (LLMProvider.OLLAMA, LLMProvider.LMSTUDIO):
-        installed = providers.list_local_models(q.provider, q.base_url)
-    return {"suggested": suggested, "installed": installed,
+        installed, error = providers.list_local_models(q.provider, q.base_url)
+    return {"suggested": suggested, "installed": installed, "error": error,
+            "normalized_base": normalized,
             "default_base": providers.DEFAULT_BASE[q.provider]}
 
 

@@ -78,7 +78,8 @@ function updateProviderUI() {
 
 async function refreshModels() {
   const provider = $("#l_provider").value;
-  $("#modelStatus").textContent = "Detecting…";
+  const local = ["ollama", "lmstudio"].includes(provider);
+  $("#modelStatus").textContent = "Detecting…"; $("#modelStatus").className = "status";
   try {
     const r = await api("/api/llm/models", {
       method: "POST",
@@ -89,9 +90,23 @@ async function refreshModels() {
       const o = document.createElement("option"); o.value = m; dl.appendChild(o);
     });
     $("#l_base").placeholder = r.default_base;
-    $("#modelStatus").textContent = r.installed.length
-      ? `${r.installed.length} local model(s) detected` : "";
-  } catch (e) { $("#modelStatus").textContent = ""; }
+    // If the entered URL was repaired (e.g. slash-before-port), reflect the fix.
+    if (r.normalized_base && $("#l_base").value && r.normalized_base !== $("#l_base").value.replace(/\/+$/, "")) {
+      $("#l_base").value = r.normalized_base;
+    }
+    if (r.installed.length) {
+      $("#modelStatus").textContent = `${r.installed.length} local model(s) detected`;
+      $("#modelStatus").className = "status ok";
+    } else if (local && r.error) {
+      $("#modelStatus").textContent = r.error;
+      $("#modelStatus").className = "status err";
+    } else if (local) {
+      $("#modelStatus").textContent = "No models found at that address.";
+      $("#modelStatus").className = "status err";
+    } else {
+      $("#modelStatus").textContent = "";
+    }
+  } catch (e) { $("#modelStatus").textContent = e.message; $("#modelStatus").className = "status err"; }
 }
 
 $("#l_provider").addEventListener("change", () => { updateProviderUI(); refreshModels(); });

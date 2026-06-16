@@ -37,22 +37,50 @@ class LLMError(Exception):
 
 
 def _base_url(s: LLMSettings) -> str:
-    return (s.base_url or DEFAULT_BASE[s.provider]).rstrip("/")
+    return normalize_base_url(s.base_url) or DEFAULT_BASE[s.provider].rstrip("/")
 
 
-def list_local_models(provider: LLMProvider, base_url: str = "") -> list[str]:
-    """Query a local runtime for installed models (best-effort)."""
-    base = (base_url or DEFAULT_BASE.get(provider, "")).rstrip("/")
+def normalize_base_url(url: str) -> str:
+    """Clean up a user-entered base URL.
+
+    - add a scheme if missing
+    - drop a trailing slash
+    - repair a common typo where a slash was used before the port
+      (http://host/11434  ->  http://host:11434)
+    """
+    import re
+
+    u = (url or "").strip().rstrip("/")
+    if not u:
+        return u
+    if "://" not in u:
+        u = "http://" + u
+    # host/<digits> with no real port -> host:<digits>
+    m = re.match(r"^(https?://[^/:]+)/(\d{2,5})$", u)
+    if m:
+        u = f"{m.group(1)}:{m.group(2)}"
+    return u
+
+
+def list_local_models(provider: LLMProvider, base_url: str = "") -> tuple[list[str], str]:
+    """Query a local runtime for installed models.
+
+    Returns (models, error). error is "" on success. trust_env=False so a LAN
+    runtime isn't routed through an HTTP(S)_PROXY meant for internet traffic.
+    """
+    base = normalize_base_url(base_url) or DEFAULT_BASE.get(provider, "").rstrip("/")
     try:
-        with httpx.Client(timeout=10.0) as c:
+        with httpx.Client(timeout=10.0, trust_env=False) as c:
             if provider == LLMProvider.OLLAMA:
-                data = c.get(f"{base}/api/tags").json()
-                return [m["name"] for m in data.get("models", [])]
+                r = c.get(f"{base}/api/tags")
+                r.raise_for_status()
+                return [m["name"] for m in r.json().get("models", [])], ""
             # LM Studio / OpenAI-compatible
-            data = c.get(f"{base}/v1/models").json()
-            return [m["id"] for m in data.get("data", [])]
-    except Exception:
-        return []
+            r = c.get(f"{base}/v1/models")
+            r.raise_for_status()
+            return [m["id"] for m in r.json().get("data", [])], ""
+    except Exception as exc:  # noqa: BLE001
+        return [], f"Could not reach {base}: {exc}"
 
 
 def complete(system: str, user: str, s: LLMSettings) -> str:
