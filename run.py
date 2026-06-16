@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Cross-platform launcher: starts the local server and opens the UI in a browser.
+"""Self-contained launcher for the UniFi AI Config Auditor.
 
-Usage:  python run.py            # launches on http://127.0.0.1:8765 (or next free port)
-        python run.py --port N   # custom port, --no-browser to skip auto-open
+By default it starts the bundled server and shows the UI in a NATIVE desktop
+window (WKWebView on macOS, WebView2 on Windows, WebKitGTK on Linux) — no browser
+tab. If no native webview backend is available it falls back to the default browser.
 
-Designed to never die silently when double-clicked: if the chosen port is busy it
-falls back to a free one, if our app is already running it just reopens the browser,
-and any fatal error is written to a log file and (on macOS) shown in a dialog.
+Flags:
+  --no-browser   headless: just serve and block (used by CI / remote use)
+  --browser      force the browser instead of a native window
+  --port N       preferred port (falls back to a free one if busy)
 """
 from __future__ import annotations
 
@@ -18,6 +20,8 @@ import traceback
 import webbrowser
 from pathlib import Path
 from urllib.request import urlopen
+
+APP_TITLE = "UniFi AI Config Auditor"
 
 
 def _log_path() -> Path:
@@ -37,7 +41,6 @@ def _port_free(host: str, port: int) -> bool:
 
 
 def _our_app_at(host: str, port: int) -> bool:
-    """True if THIS app is already serving on host:port (so we don't double-launch)."""
     try:
         with urlopen(f"http://{host}:{port}/api/version", timeout=1.5) as r:
             return r.status == 200 and b"version" in r.read()
@@ -51,7 +54,33 @@ def _pick_port(host: str, desired: int) -> int:
     for p in range(desired + 1, desired + 50):
         if _port_free(host, p):
             return p
-    return desired  # let uvicorn surface the bind error
+    return desired
+
+
+def _wait_ready(url: str, timeout: float = 25.0) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _our_app_at(*_split(url)):
+            return True
+        time.sleep(0.2)
+    return False
+
+
+def _split(url: str) -> tuple[str, int]:
+    rest = url.split("://", 1)[-1]
+    host, _, port = rest.partition(":")
+    return host, int(port or 80)
+
+
+def _serve_in_thread(host: str, port: int):
+    """Run uvicorn in a daemon thread; return the Server so it can be stopped."""
+    import uvicorn
+    from backend.main import app
+
+    config = uvicorn.Config(app, host=host, port=port, log_level="warning")
+    server = uvicorn.Server(config)
+    threading.Thread(target=server.run, daemon=True).start()
+    return server
 
 
 def _report_fatal(exc: BaseException) -> None:
@@ -62,16 +91,15 @@ def _report_fatal(exc: BaseException) -> None:
         pass
     short = f"{type(exc).__name__}: {exc}"
     print("\n  FATAL: " + short + "\n  See " + str(_log_path()) + "\n")
-    # On macOS, surface a dialog so a double-clicked app doesn't just vanish.
     import sys
     if sys.platform == "darwin":
         try:
             import subprocess
-            body = (f"UniFi AI Config Auditor could not start.\n\n{short}\n\n"
+            body = (f"{APP_TITLE} could not start.\n\n{short}\n\n"
                     f"Details: {_log_path()}").replace('"', "'")
             subprocess.run(
                 ["osascript", "-e",
-                 f'display dialog "{body}" with title "UniFi AI Config Auditor" '
+                 f'display dialog "{body}" with title "{APP_TITLE}" '
                  f'buttons {{"OK"}} with icon stop'],
                 timeout=60, check=False,
             )
@@ -79,18 +107,40 @@ def _report_fatal(exc: BaseException) -> None:
             pass
 
 
+def _run_windowed(url: str) -> bool:
+    """Show the UI in a native window. Returns False if no backend is available."""
+    try:
+        import webview
+    except Exception:
+        return False
+    try:
+        webview.create_window(APP_TITLE, url, width=1240, height=880, min_size=(960, 660))
+        # http_server stays in our uvicorn thread; this blocks until the window closes.
+        webview.start()
+        return True
+    except Exception as exc:  # backend present but failed to start (e.g. no display)
+        try:
+            _log_path().write_text("".join(
+                traceback.format_exception(type(exc), exc, exc.__traceback__)))
+        except Exception:
+            pass
+        return False
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="UniFi AI Config Auditor")
+    parser = argparse.ArgumentParser(description=APP_TITLE)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--no-browser", action="store_true",
+                        help="headless: serve only, no window or browser")
+    parser.add_argument("--browser", action="store_true",
+                        help="use the default browser instead of a native window")
     args = parser.parse_args()
 
-    # If our app is already running on the desired port, just reopen the UI and exit
-    # cleanly rather than crashing on a port conflict (common on a second launch).
+    # Already running? Just focus the existing instance and exit.
     if _our_app_at(args.host, args.port):
         url = f"http://{args.host}:{args.port}"
-        print(f"\n  Already running at {url} — reopening browser.\n")
+        print(f"\n  Already running at {url}.\n")
         if not args.no_browser:
             webbrowser.open(url)
         return
@@ -98,17 +148,29 @@ def main() -> None:
     port = _pick_port(args.host, args.port)
     url = f"http://{args.host}:{port}"
 
-    if not args.no_browser:
-        def _open() -> None:
-            time.sleep(1.2)
-            webbrowser.open(url)
-        threading.Thread(target=_open, daemon=True).start()
+    # Headless mode (CI / remote): serve on the main thread and block.
+    if args.no_browser:
+        import uvicorn
+        from backend.main import app
+        print(f"\n  {APP_TITLE} running at {url}\n  Press Ctrl+C to stop.\n")
+        uvicorn.run(app, host=args.host, port=port, log_level="warning")
+        return
 
-    import uvicorn
-    from backend.main import app
+    server = _serve_in_thread(args.host, port)
+    if not _wait_ready(url):
+        raise RuntimeError("Server did not become ready in time.")
+    print(f"\n  {APP_TITLE} running at {url}\n")
 
-    print(f"\n  UniFi AI Config Auditor running at {url}\n  Press Ctrl+C to stop.\n")
-    uvicorn.run(app, host=args.host, port=port, log_level="warning")
+    shown = False if args.browser else _run_windowed(url)
+    if not shown:
+        # Fall back to a browser tab and keep the server alive.
+        webbrowser.open(url)
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            pass
+    server.should_exit = True
 
 
 if __name__ == "__main__":

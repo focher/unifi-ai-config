@@ -2,3 +2,11 @@ fastapi>=0.137
 uvicorn>=0.49
 httpx>=0.28
 pydantic>=2.13
+# Native desktop window. pywebview is pure-Python; the macOS backend needs pyobjc
+# (universal2 wheels available). Windows uses WebView2, Linux uses WebKitGTK; where
+# no backend is present the app falls back to the default browser.
+pywebview>=5.4
+pyobjc-core; sys_platform == 'darwin'
+pyobjc-framework-Cocoa; sys_platform == 'darwin'
+pyobjc-framework-WebKit; sys_platform == 'darwin'
+pyobjc-framework-Quartz; sys_platform == 'darwin'

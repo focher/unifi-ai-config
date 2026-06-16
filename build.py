@@ -53,8 +53,15 @@ def main() -> None:
         "--hidden-import", "uvicorn.protocols.http.auto",
         "--hidden-import", "uvicorn.protocols.websockets.auto",
         "--hidden-import", "uvicorn.lifespan.on",
+        # Native window backend (pywebview + its platform bindings).
+        "--collect-all", "webview",
         *arch_opts,
     ]
+    if sys.platform == "darwin":
+        # WKWebView backend bindings (pyobjc) imported dynamically.
+        for mod in ("objc", "Foundation", "AppKit", "WebKit", "Quartz",
+                    "PyObjCTools", "PyObjCTools.AppHelper"):
+            opts += ["--hidden-import", mod]
     args = [*launcher, sys.executable, "-m", "PyInstaller", *opts, "run.py"]
 
     target = build_arch or platform.machine()
