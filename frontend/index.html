@@ -28,6 +28,15 @@
         </div>
         <div id="collectProgress" class="progress-grid hidden"></div>
         <div id="collectStatus" class="status"></div>
+
+        <div id="collectedData" class="collected hidden">
+          <div class="collected-head">
+            <h3>Collected data</h3>
+            <select id="dataSnapshotSelect" title="Snapshot to browse"></select>
+            <button id="downloadAllBtn" class="small">⬇ Download all (JSON)</button>
+          </div>
+          <div id="sectionList" class="section-list"></div>
+        </div>
       </div>
 
       <!-- STEP 2: ANALYZE -->
@@ -112,6 +121,22 @@
       </div>
     </section>
   </main>
+
+  <!-- Section data viewer modal -->
+  <div id="dataModal" class="modal hidden">
+    <div class="modal-body">
+      <button class="close" id="dataModalClose">✕</button>
+      <div class="data-head">
+        <h3 id="dataTitle"></h3>
+        <div class="data-actions">
+          <button id="dataCopyBtn" class="small">⧉ Copy</button>
+          <button id="dataDownloadBtn" class="small">⬇ Download</button>
+        </div>
+      </div>
+      <div id="dataMeta" class="muted"></div>
+      <pre id="dataJson" class="json-view"></pre>
+    </div>
+  </div>
 
   <!-- Issue detail modal -->
   <div id="modal" class="modal hidden">

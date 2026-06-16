@@ -17,6 +17,8 @@ automation), or **Leave for later**.
 - **Full config + traffic ingestion** directly from the UniFi Network controller API
   (works with UniFi OS consoles — UDM/UDM-Pro/Cloud Key Gen2+/Dream Machine — and
   classic self-hosted controllers).
+- **Browse / copy / download** every collected section (firewall rules, WLANs, DPI
+  traffic flows, devices, …) as JSON — per section or the whole snapshot at once.
 - **Any LLM you want:**
   - Cloud: **Anthropic (Claude)**, **OpenAI**, **Google (Gemini)**
   - Local / private: **Ollama** and **LM Studio** (auto-detects installed models)

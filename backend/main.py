@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Iterator, Optional
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -16,7 +16,14 @@ from . import analyzer
 from .llm import providers
 from .models import AppSettings, Disposition, LLMProvider, LLMSettings, Snapshot
 from .storage import store
-from .unifi_client import MFARequired, UniFiClient, UniFiError
+from .unifi_client import (
+    MFARequired,
+    SECTION_GROUPS,
+    SECTION_LABELS,
+    SECTION_META,
+    UniFiClient,
+    UniFiError,
+)
 
 
 def _ndjson(events: Iterator[dict]) -> StreamingResponse:
@@ -184,6 +191,63 @@ def list_snapshots() -> list[dict]:
          "total_objects": sum(v for v in s.object_counts.values() if v > 0)}
         for s in store.list_snapshots()
     ]
+
+
+def _section_value(snap, key: str):
+    """Return (group, value) for a section key within a snapshot, or (None, None)."""
+    group = SECTION_GROUPS.get(key)
+    if group is None:
+        return None, None
+    return group, (snap.data.get(group, {}) or {}).get(key)
+
+
+@app.get("/api/snapshots/{snapshot_id}/sections")
+def snapshot_sections(snapshot_id: str) -> list[dict]:
+    """List the data sections present in a snapshot, in canonical order."""
+    snap = store.get_snapshot(snapshot_id)
+    if not snap:
+        raise HTTPException(404, "Snapshot not found")
+    out = []
+    for key, label, group in SECTION_META:
+        bucket = snap.data.get(group, {}) or {}
+        if key not in bucket:
+            continue
+        count = snap.object_counts.get(key, 0)
+        out.append({"key": key, "label": label, "group": group, "count": count,
+                    "error": count == -1})
+    return out
+
+
+@app.get("/api/snapshots/{snapshot_id}/section/{key}")
+def snapshot_section(snapshot_id: str, key: str, download: bool = False):
+    """Return one section's raw collected data (for browse/copy/download)."""
+    snap = store.get_snapshot(snapshot_id)
+    if not snap:
+        raise HTTPException(404, "Snapshot not found")
+    group, value = _section_value(snap, key)
+    if group is None or key not in (snap.data.get(group, {}) or {}):
+        raise HTTPException(404, "Section not found in snapshot")
+    if download:
+        body = json.dumps(value, indent=2, default=str)
+        return Response(
+            content=body, media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{key}.json"'},
+        )
+    return {"key": key, "label": SECTION_LABELS.get(key, key), "group": group, "data": value}
+
+
+@app.get("/api/snapshots/{snapshot_id}/download")
+def snapshot_download(snapshot_id: str):
+    """Download the entire snapshot (config + traffic) as one JSON file."""
+    snap = store.get_snapshot(snapshot_id)
+    if not snap:
+        raise HTTPException(404, "Snapshot not found")
+    body = json.dumps(snap.data, indent=2, default=str)
+    stamp = snap.created_at.strftime("%Y%m%d-%H%M%S")
+    return Response(
+        content=body, media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="unifi-snapshot-{stamp}.json"'},
+    )
 
 
 # --------------------------- step 2: analysis (streaming, chunked) ---------------------------

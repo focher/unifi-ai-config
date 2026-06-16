@@ -208,18 +208,105 @@ async function runCollect(mfaToken) {
 
 async function loadSnapshots(selectId) {
   const snaps = await api("/api/snapshots");
-  const sel = $("#snapshotSelect"); sel.innerHTML = "";
+  const sel = $("#snapshotSelect");
+  const dataSel = $("#dataSnapshotSelect");
+  sel.innerHTML = ""; dataSel.innerHTML = "";
   if (!snaps.length) {
     const o = document.createElement("option"); o.textContent = "— no snapshots yet —"; o.disabled = true;
-    sel.appendChild(o); return;
+    sel.appendChild(o);
+    $("#collectedData").classList.add("hidden");
+    return;
   }
   snaps.forEach((s) => {
-    const o = document.createElement("option"); o.value = s.id;
-    o.textContent = `${new Date(s.created_at).toLocaleString()} · ${s.total_objects} objects`;
-    sel.appendChild(o);
+    const label = `${new Date(s.created_at).toLocaleString()} · ${s.total_objects} objects`;
+    const o = document.createElement("option"); o.value = s.id; o.textContent = label; sel.appendChild(o);
+    const o2 = document.createElement("option"); o2.value = s.id; o2.textContent = label; dataSel.appendChild(o2);
   });
-  if (selectId) sel.value = selectId;
+  const chosen = selectId || snaps[0].id;
+  sel.value = chosen; dataSel.value = chosen;
+  $("#collectedData").classList.remove("hidden");
+  loadSections(chosen);
 }
+
+// ---------- collected-data browser ----------
+let currentDataSnapshot = null;
+
+$("#dataSnapshotSelect").addEventListener("change", (e) => loadSections(e.target.value));
+$("#downloadAllBtn").addEventListener("click", () => {
+  if (currentDataSnapshot) window.location = `/api/snapshots/${currentDataSnapshot}/download`;
+});
+
+async function loadSections(snapshotId) {
+  currentDataSnapshot = snapshotId;
+  const box = $("#sectionList"); box.innerHTML = "";
+  let sections;
+  try { sections = await api(`/api/snapshots/${snapshotId}/sections`); }
+  catch (e) { box.innerHTML = `<div class="muted">${esc(e.message)}</div>`; return; }
+  sections.forEach((s) => {
+    const row = document.createElement("div");
+    const cls = s.error ? "err" : s.count === 0 ? "empty" : "";
+    row.className = "section-row " + cls;
+    const cnt = s.error ? "n/a" : `${s.count}`;
+    row.innerHTML = `
+      <span class="grp ${s.group}"></span>
+      <span class="lbl">${esc(s.label)}</span>
+      <span class="cnt">${cnt}</span>
+      <span class="acts">
+        <button data-act="browse">Browse</button>
+        <button data-act="copy">Copy</button>
+        <button data-act="download">Download</button>
+      </span>`;
+    row.querySelector('[data-act="browse"]').addEventListener("click", () => browseSection(snapshotId, s));
+    row.querySelector('[data-act="copy"]').addEventListener("click", (e) => copySection(snapshotId, s, e.target));
+    row.querySelector('[data-act="download"]').addEventListener("click", () =>
+      window.location = `/api/snapshots/${snapshotId}/section/${s.key}?download=true`);
+    box.appendChild(row);
+  });
+}
+
+async function fetchSection(snapshotId, key) {
+  const r = await api(`/api/snapshots/${snapshotId}/section/${key}`);
+  return r.data;
+}
+
+async function browseSection(snapshotId, s) {
+  $("#dataTitle").textContent = s.label;
+  $("#dataMeta").textContent = `${s.group} · ${s.error ? "error" : s.count + " object(s)"} · ${s.key}`;
+  $("#dataJson").textContent = "Loading…";
+  $("#dataModal").classList.remove("hidden");
+  let data;
+  try { data = await fetchSection(snapshotId, s.key); }
+  catch (e) { $("#dataJson").textContent = e.message; return; }
+  const text = JSON.stringify(data, null, 2);
+  $("#dataJson").textContent = text;
+  $("#dataCopyBtn").onclick = () => copyText(text, $("#dataCopyBtn"));
+  $("#dataDownloadBtn").onclick = () =>
+    window.location = `/api/snapshots/${snapshotId}/section/${s.key}?download=true`;
+}
+
+async function copySection(snapshotId, s, btn) {
+  try {
+    const data = await fetchSection(snapshotId, s.key);
+    await copyText(JSON.stringify(data, null, 2), btn);
+  } catch (e) { btn.textContent = "Failed"; setTimeout(() => (btn.textContent = "Copy"), 1500); }
+}
+
+async function copyText(text, btn) {
+  const label = btn.textContent;
+  try {
+    await navigator.clipboard.writeText(text);
+    btn.textContent = "Copied ✓";
+  } catch {
+    // Fallback for environments without clipboard API.
+    const ta = document.createElement("textarea"); ta.value = text; document.body.appendChild(ta);
+    ta.select(); try { document.execCommand("copy"); btn.textContent = "Copied ✓"; }
+    catch { btn.textContent = "Failed"; } document.body.removeChild(ta);
+  }
+  setTimeout(() => (btn.textContent = label), 1500);
+}
+
+$("#dataModalClose").addEventListener("click", () => $("#dataModal").classList.add("hidden"));
+$("#dataModal").addEventListener("click", (e) => { if (e.target.id === "dataModal") $("#dataModal").classList.add("hidden"); });
 
 // ---------- STEP 2: analyze ----------
 $("#analyzeBtn").addEventListener("click", async () => {

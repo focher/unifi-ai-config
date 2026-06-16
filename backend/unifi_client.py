@@ -16,6 +16,35 @@ import httpx
 from .models import UniFiSettings
 
 
+# Ordered metadata for every collected section: (key, label, group). The fetch
+# logic lives in collection_plan(); this is the shared source of truth for labels
+# and ordering, reused by the snapshot-browsing API.
+SECTION_META: list[tuple[str, str, str]] = [
+    ("settings", "Controller settings", "config"),
+    ("networks", "Networks / VLANs", "config"),
+    ("wlans", "Wireless networks (WLANs)", "config"),
+    ("firewall_rules", "Firewall rules", "config"),
+    ("firewall_groups", "Firewall groups", "config"),
+    ("firewall_policies", "Firewall policies (zone-based)", "config"),
+    ("port_forwards", "Port forwarding rules", "config"),
+    ("routing", "Static routes", "config"),
+    ("traffic_rules", "Traffic rules", "config"),
+    ("traffic_routes", "Traffic routes / policy routing", "config"),
+    ("port_profiles", "Switch port profiles", "config"),
+    ("user_groups", "User groups / bandwidth profiles", "config"),
+    ("devices", "UniFi devices", "config"),
+    ("known_clients", "Known clients", "config"),
+    ("active_clients", "Active clients", "config"),
+    ("dpi_by_app", "Traffic flows — by application", "traffic"),
+    ("dpi_by_category", "Traffic flows — by category", "traffic"),
+    ("ips_events", "IPS / IDS threat events", "traffic"),
+    ("alarms", "Alarms", "traffic"),
+]
+
+SECTION_LABELS: dict[str, str] = {k: l for k, l, _ in SECTION_META}
+SECTION_GROUPS: dict[str, str] = {k: g for k, _, g in SECTION_META}
+
+
 class UniFiError(Exception):
     pass
 
@@ -155,32 +184,30 @@ class UniFiClient:
         s = lambda p: self._api(f"/s/{site}{p}")  # noqa: E731
         v2 = lambda p: self._v2(f"/site/{site}{p}")  # noqa: E731
 
-        def step(key, label, group, fn):
-            return {"key": key, "label": label, "group": group, "fetch": fn}
-
+        fetchers = {
+            "settings": lambda: self._get(s("/get/setting")),
+            "networks": lambda: self._get(s("/rest/networkconf")),
+            "wlans": lambda: self._get(s("/rest/wlanconf")),
+            "firewall_rules": lambda: self._get(s("/rest/firewallrule")),
+            "firewall_groups": lambda: self._get(s("/rest/firewallgroup")),
+            "firewall_policies": lambda: self._get(v2("/firewall-policies")),
+            "port_forwards": lambda: self._get(s("/rest/portforward")),
+            "routing": lambda: self._get(s("/rest/routing")),
+            "traffic_rules": lambda: self._get(v2("/trafficrules")),
+            "traffic_routes": lambda: self._get(v2("/trafficroutes")),
+            "port_profiles": lambda: self._get(s("/rest/portconf")),
+            "user_groups": lambda: self._get(s("/rest/usergroup")),
+            "devices": lambda: self._get(s("/stat/device")),
+            "known_clients": lambda: self._get(s("/rest/user")),
+            "active_clients": lambda: self._get(s("/stat/sta")),
+            "dpi_by_app": lambda: self.request("POST", s("/stat/sitedpi"), {"type": "by_app"}),
+            "dpi_by_category": lambda: self.request("POST", s("/stat/sitedpi"), {"type": "by_cat"}),
+            "ips_events": lambda: self.request("POST", s("/stat/ips/event"), {"_limit": 200}),
+            "alarms": lambda: self._get(s("/list/alarm")),
+        }
         return [
-            step("settings", "Controller settings", "config", lambda: self._get(s("/get/setting"))),
-            step("networks", "Networks / VLANs", "config", lambda: self._get(s("/rest/networkconf"))),
-            step("wlans", "Wireless networks (WLANs)", "config", lambda: self._get(s("/rest/wlanconf"))),
-            step("firewall_rules", "Firewall rules", "config", lambda: self._get(s("/rest/firewallrule"))),
-            step("firewall_groups", "Firewall groups", "config", lambda: self._get(s("/rest/firewallgroup"))),
-            step("firewall_policies", "Firewall policies (zone-based)", "config", lambda: self._get(v2("/firewall-policies"))),
-            step("port_forwards", "Port forwarding rules", "config", lambda: self._get(s("/rest/portforward"))),
-            step("routing", "Static routes", "config", lambda: self._get(s("/rest/routing"))),
-            step("traffic_rules", "Traffic rules", "config", lambda: self._get(v2("/trafficrules"))),
-            step("traffic_routes", "Traffic routes / policy routing", "config", lambda: self._get(v2("/trafficroutes"))),
-            step("port_profiles", "Switch port profiles", "config", lambda: self._get(s("/rest/portconf"))),
-            step("user_groups", "User groups / bandwidth profiles", "config", lambda: self._get(s("/rest/usergroup"))),
-            step("devices", "UniFi devices", "config", lambda: self._get(s("/stat/device"))),
-            step("known_clients", "Known clients", "config", lambda: self._get(s("/rest/user"))),
-            step("active_clients", "Active clients", "config", lambda: self._get(s("/stat/sta"))),
-            step("dpi_by_app", "Traffic flows — by application", "traffic",
-                 lambda: self.request("POST", s("/stat/sitedpi"), {"type": "by_app"})),
-            step("dpi_by_category", "Traffic flows — by category", "traffic",
-                 lambda: self.request("POST", s("/stat/sitedpi"), {"type": "by_cat"})),
-            step("ips_events", "IPS / IDS threat events", "traffic",
-                 lambda: self.request("POST", s("/stat/ips/event"), {"_limit": 200})),
-            step("alarms", "Alarms", "traffic", lambda: self._get(s("/list/alarm"))),
+            {"key": k, "label": l, "group": g, "fetch": fetchers[k]}
+            for k, l, g in SECTION_META
         ]
 
     @staticmethod
