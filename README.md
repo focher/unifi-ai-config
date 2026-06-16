@@ -76,6 +76,49 @@ Linux ELF binary). A local `python build.py` produces a binary for the host CPU 
 the release CI builds macOS for **both** architectures and `lipo`-merges them into a
 single **universal2 (Apple Silicon + Intel)** binary.
 
+## Running the released binaries (code signing)
+
+The published binaries are **code-signed to the extent possible without paid
+certificates**. What that means per platform, and how to launch them:
+
+### macOS
+The universal binary is **ad-hoc signed** — it is valid and not flagged as
+"damaged", and runs on both Apple Silicon and Intel. Because it is not signed with
+an Apple **Developer ID** and notarized, Gatekeeper still quarantines it on first
+download. Clear the quarantine once:
+
+```bash
+xattr -dr com.apple.quarantine ./unifi-ai-auditor-macos
+chmod +x ./unifi-ai-auditor-macos
+./unifi-ai-auditor-macos
+```
+
+Or right-click the binary in Finder → **Open** → **Open** the first time.
+
+### Windows
+The `.exe` is **unsigned** (no Authenticode certificate). SmartScreen may warn on
+first run: click **More info → Run anyway**. Then it launches normally.
+
+### Linux
+No signing is required to run. Just make it executable:
+
+```bash
+chmod +x ./unifi-ai-auditor-linux
+./unifi-ai-auditor-linux
+```
+
+### Enabling fully warning-free signing (optional)
+The release workflow auto-signs with real certificates **if** you add these repo
+secrets — no workflow edits needed:
+
+| Platform | Secrets | Effect |
+|----------|---------|--------|
+| macOS    | `MACOS_CERTIFICATE_BASE64`, `MACOS_CERTIFICATE_PWD`, `MACOS_SIGN_IDENTITY` (+ `AC_NOTARY_USER`, `AC_NOTARY_PASSWORD`, `AC_NOTARY_TEAM_ID` for notarization) | Developer ID signature + Apple notarization |
+| Windows  | `WINDOWS_CERTIFICATE_BASE64`, `WINDOWS_CERTIFICATE_PWD` | Authenticode signature via `signtool` |
+
+For a fully offline, warning-free macOS launch you must also package the notarized
+binary as a `.dmg`/`.app` (a ticket can't be stapled to a bare executable).
+
 ## Data & security
 
 - All settings and results are stored locally under `~/.unifi-ai-config/`. Credentials

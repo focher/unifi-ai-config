@@ -27,6 +27,10 @@ jobs:
             artifact: unifi-ai-auditor-linux
             ext: ""
     runs-on: ${{ matrix.os }}
+    env:
+      # Authenticode signing activates automatically when these secrets are set.
+      WIN_CERT: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+      WIN_PWD: ${{ secrets.WINDOWS_CERTIFICATE_PWD }}
     steps:
       - uses: actions/checkout@v6
 
@@ -47,6 +51,21 @@ jobs:
         run: |
           mkdir -p out
           cp "dist/unifi-ai-auditor${{ matrix.ext }}" "out/${{ matrix.artifact }}${{ matrix.ext }}"
+          # Linux release assets lose the exec bit in transit; nothing to sign — users
+          # chmod +x. Keep it executable in the artifact for convenience.
+          chmod +x "out/${{ matrix.artifact }}${{ matrix.ext }}" || true
+
+      - name: Sign Windows executable (only if a certificate secret is present)
+        if: runner.os == 'Windows' && env.WIN_CERT != ''
+        shell: pwsh
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "cert.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WIN_CERT))
+          $signtool = (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object FullName | Select-Object -Last 1).FullName
+          & $signtool sign /f $pfx /p $env:WIN_PWD /fd SHA256 `
+            /tr http://timestamp.digicert.com /td SHA256 "out\${{ matrix.artifact }}.exe"
+          & $signtool verify /pa "out\${{ matrix.artifact }}.exe"
 
       - uses: actions/upload-artifact@v7
         with:
@@ -68,6 +87,13 @@ jobs:
     runs-on: macos-14   # Apple Silicon; Rosetta 2 is preinstalled (for the smoke test)
     env:
       PYVER: "3.13.14"
+      # Developer ID signing + notarization activate automatically when set.
+      MACOS_CERT: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+      MACOS_CERT_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+      MACOS_SIGN_ID: ${{ secrets.MACOS_SIGN_IDENTITY }}
+      AC_NOTARY_USER: ${{ secrets.AC_NOTARY_USER }}
+      AC_NOTARY_PASSWORD: ${{ secrets.AC_NOTARY_PASSWORD }}
+      AC_NOTARY_TEAM_ID: ${{ secrets.AC_NOTARY_TEAM_ID }}
     steps:
       - uses: actions/checkout@v6
 
@@ -117,6 +143,43 @@ jobs:
           echo "Final architectures:"; lipo -archs out/unifi-ai-auditor-macos
           file out/unifi-ai-auditor-macos
           test "$(lipo -archs out/unifi-ai-auditor-macos)" = "x86_64 arm64"
+
+      - name: Sign macOS binary (Developer ID if available, else ad-hoc)
+        run: |
+          set -e
+          BIN=out/unifi-ai-auditor-macos
+          if [ -n "$MACOS_CERT" ]; then
+            echo "Importing Developer ID certificate and signing…"
+            echo "$MACOS_CERT" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+            KC="$RUNNER_TEMP/build.keychain"
+            security create-keychain -p actions "$KC"
+            security default-keychain -s "$KC"
+            security unlock-keychain -p actions "$KC"
+            security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$MACOS_CERT_PWD" -T /usr/bin/codesign
+            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k actions "$KC" >/dev/null
+            codesign --force --options runtime --timestamp --sign "$MACOS_SIGN_ID" "$BIN"
+          else
+            # Ad-hoc signature: required for arm64 Mach-O to be loadable and keeps the
+            # binary from being flagged as "damaged". Does NOT clear Gatekeeper
+            # quarantine on download — that needs Developer ID + notarization.
+            echo "No Developer ID cert; applying ad-hoc signature."
+            codesign --force --sign - --timestamp=none "$BIN"
+          fi
+          codesign --verify --verbose=2 "$BIN"
+          codesign --display --verbose=2 "$BIN" || true
+
+      - name: Notarize & staple (only if Developer ID + notary creds are present)
+        if: env.MACOS_CERT != '' && env.AC_NOTARY_USER != ''
+        run: |
+          set -e
+          BIN=out/unifi-ai-auditor-macos
+          ditto -c -k --keepParent "$BIN" "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+            --apple-id "$AC_NOTARY_USER" --password "$AC_NOTARY_PASSWORD" \
+            --team-id "$AC_NOTARY_TEAM_ID" --wait
+          # Note: a notarization ticket cannot be stapled to a bare executable (only
+          # to .app/.dmg/.pkg). Gatekeeper verifies online for the bare binary. For
+          # fully offline, warning-free launch, package as a notarized .dmg.
 
       - name: Smoke-test both slices (arm64 native + x86_64 via Rosetta)
         run: |
