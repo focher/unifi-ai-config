@@ -74,12 +74,33 @@ Windows for `.exe`, Linux for an ELF binary).
 
 ## Data & security
 
-- All settings and results are stored locally under `~/.unifi-ai-config/`.
+- All settings and results are stored locally under `~/.unifi-ai-config/`. Credentials
+  (UniFi password, LLM API key) are stored in plaintext in that directory — protect it
+  with normal filesystem permissions; it never leaves your machine.
+- The server **binds to loopback only** (`127.0.0.1`) and enforces a **Host-header
+  allowlist**, so only `localhost` can reach the API — this blocks DNS-rebinding
+  attacks from malicious web pages in your browser.
+- Secrets (passwords, PSKs, keys) are **redacted from the data before it is sent to the
+  LLM**. The masked placeholder is never round-tripped back into storage.
 - Use a **read-only** UniFi admin account unless you intend to use auto-remediation,
   which requires write access.
 - The app talks only to (a) your controller and (b) the LLM endpoint you configure.
 - Review every auto-remediation action before confirming — it shows the exact API
   call that will be made.
+
+### Security scanning
+
+Every push and PR runs a CI security scan ([`.github/workflows/security.yml`](.github/workflows/security.yml)):
+- **bandit** — static analysis of the Python code.
+- **pip-audit** — dependency vulnerability audit against the advisory database.
+
+Run them locally with:
+
+```bash
+pip install bandit pip-audit
+bandit -r backend run.py build.py -ll
+pip-audit -r requirements.txt
+```
 
 ## Architecture
 

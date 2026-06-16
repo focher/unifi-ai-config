@@ -295,5 +295,6 @@ def analyze(collected: dict[str, Any], llm: LLMSettings, snapshot_id: str = "") 
     for event in analyze_streaming(collected, llm, snapshot_id):
         if event["type"] == "result":
             result = AnalysisResult.model_validate(event["result"])
-    assert result is not None
+    if result is None:
+        raise RuntimeError("Analysis produced no result.")
     return result

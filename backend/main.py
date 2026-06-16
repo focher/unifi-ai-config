@@ -7,8 +7,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterator, Optional
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -26,6 +26,21 @@ def _ndjson(events: Iterator[dict]) -> StreamingResponse:
     return StreamingResponse(gen(), media_type="application/x-ndjson")
 
 app = FastAPI(title="UniFi AI Config Auditor")
+
+
+# The server binds to loopback and holds live controller credentials, so only
+# requests addressed to localhost are honored. This blocks DNS-rebinding attacks
+# where a malicious web page resolves its own hostname to 127.0.0.1 to reach the
+# local API from the user's browser.
+_ALLOWED_HOSTS = {"localhost", "127.0.0.1", "[::1]", "::1"}
+
+
+@app.middleware("http")
+async def _restrict_host(request: Request, call_next):
+    host = (request.headers.get("host") or "").split(":")[0].strip("[]")
+    if host and host not in {h.strip("[]") for h in _ALLOWED_HOSTS}:
+        return JSONResponse(status_code=421, content={"detail": "Host not allowed."})
+    return await call_next(request)
 
 
 def _frontend_dir() -> Path:
