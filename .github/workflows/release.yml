@@ -81,7 +81,7 @@ jobs:
           echo "arm64 slice:"; lipo -archs slices/arm64
           test "$(lipo -archs slices/arm64)" = "arm64"
 
-      - uses: astral-sh/setup-uv@v8
+      - uses: astral-sh/setup-uv@v8.2.0
 
       - name: Build x86_64 slice (uv x86_64 Python, via Rosetta)
         run: |
