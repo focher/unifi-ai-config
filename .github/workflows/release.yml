@@ -59,48 +59,82 @@ jobs:
         with:
           files: out/*
 
-  # ---- macOS: build arm64 natively + x86_64 under Rosetta on one Apple-Silicon
-  #      runner, then lipo-merge into a universal2 binary. Avoids depending on the
-  #      scarce Intel (macos-13) hosted runners. ----
+  # ---- macOS: a true universal2 onefile. Two onefile builds CANNOT be lipo-merged
+  #      (each appends an arch-specific Python runtime), so we build once with a
+  #      universal2 Python (python.org) and --target-architecture universal2. The
+  #      only compiled dependency, pydantic_core, ships no universal2 wheel, so we
+  #      synthesize one by lipo-merging its per-arch .so before building. ----
   build-macos:
-    runs-on: macos-14   # Apple Silicon; Rosetta 2 is preinstalled
+    runs-on: macos-14   # Apple Silicon; Rosetta 2 is preinstalled (for the smoke test)
+    env:
+      PYVER: "3.13.14"
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-
-      - name: Build arm64 slice (native)
+      - name: Install universal2 Python from python.org
         run: |
+          curl -fLO "https://www.python.org/ftp/python/${PYVER}/python-${PYVER}-macos11.pkg"
+          sudo installer -pkg "python-${PYVER}-macos11.pkg" -target /
+          echo "PY=/Library/Frameworks/Python.framework/Versions/3.13/bin/python3" >> "$GITHUB_ENV"
+
+      - name: Verify Python is universal2
+        run: |
+          lipo -archs "$(${PY} -c 'import sys;print(sys.executable)')" || true
+          lipo -archs /Library/Frameworks/Python.framework/Versions/3.13/Python
+          test "$(lipo -archs /Library/Frameworks/Python.framework/Versions/3.13/Python)" = "x86_64 arm64"
+
+      - name: Install dependencies
+        run: |
+          "$PY" -m venv .venv-u2
+          . .venv-u2/bin/activate
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
-          python build.py
-          mkdir -p slices
-          cp dist/unifi-ai-auditor slices/arm64
-          echo "arm64 slice:"; lipo -archs slices/arm64
-          test "$(lipo -archs slices/arm64)" = "arm64"
 
-      - uses: astral-sh/setup-uv@v8.2.0
-
-      - name: Build x86_64 slice (uv x86_64 Python, via Rosetta)
+      - name: Make pydantic_core universal2 (lipo-merge per-arch .so)
         run: |
-          uv python install cpython-3.13-macos-x86_64
-          uv venv --python cpython-3.13-macos-x86_64 .venv-x64
-          uv pip install --python .venv-x64 -r requirements.txt pyinstaller
-          .venv-x64/bin/python build.py
-          cp dist/unifi-ai-auditor slices/x86_64
-          echo "x86_64 slice:"; lipo -archs slices/x86_64
-          test "$(lipo -archs slices/x86_64)" = "x86_64"
+          . .venv-u2/bin/activate
+          PCVER=$(python -c "import importlib.metadata as m; print(m.version('pydantic_core'))")
+          SO=$(python -c "import pydantic_core, glob, os; print(glob.glob(os.path.join(os.path.dirname(pydantic_core.__file__), '_pydantic_core*.so'))[0])")
+          echo "pydantic_core $PCVER -> $SO"
+          rm -rf /tmp/arm /tmp/x64 && mkdir -p /tmp/arm /tmp/x64
+          pip download "pydantic_core==$PCVER" --no-deps --only-binary=:all: \
+            --platform macosx_11_0_arm64 --python-version 3.13 --implementation cp --abi cp313 -d /tmp/arm
+          pip download "pydantic_core==$PCVER" --no-deps --only-binary=:all: \
+            --platform macosx_10_12_x86_64 --python-version 3.13 --implementation cp --abi cp313 -d /tmp/x64
+          (cd /tmp/arm && unzip -o ./*.whl >/dev/null); (cd /tmp/x64 && unzip -o ./*.whl >/dev/null)
+          ARM_SO=$(find /tmp/arm -name '_pydantic_core*.so' | head -1)
+          X64_SO=$(find /tmp/x64 -name '_pydantic_core*.so' | head -1)
+          lipo -create "$ARM_SO" "$X64_SO" -output "$SO"
+          echo "merged pydantic_core:"; lipo -archs "$SO"
+          test "$(lipo -archs "$SO")" = "x86_64 arm64"
 
-      - name: Merge universal2 binary
+      - name: Build universal2 binary
         run: |
+          . .venv-u2/bin/activate
+          BUILD_ARCH=universal2 python build.py
           mkdir -p out
-          lipo -create slices/arm64 slices/x86_64 -output out/unifi-ai-auditor-macos
-          chmod +x out/unifi-ai-auditor-macos
+          cp dist/unifi-ai-auditor out/unifi-ai-auditor-macos
           echo "Final architectures:"; lipo -archs out/unifi-ai-auditor-macos
           file out/unifi-ai-auditor-macos
           test "$(lipo -archs out/unifi-ai-auditor-macos)" = "x86_64 arm64"
+
+      - name: Smoke-test both slices (arm64 native + x86_64 via Rosetta)
+        run: |
+          set -e
+          for a in arm64 x86_64; do
+            echo "--- testing $a slice ---"
+            arch -$a ./out/unifi-ai-auditor-macos --port 8799 --no-browser >/tmp/run-$a.log 2>&1 &
+            PID=$!
+            ok=
+            for i in $(seq 1 30); do
+              if curl -fs -o /dev/null "http://127.0.0.1:8799/api/settings"; then ok=1; break; fi
+              sleep 1
+            done
+            kill $PID 2>/dev/null || true
+            cat /tmp/run-$a.log
+            test -n "$ok" || { echo "::error::$a slice failed to serve"; exit 1; }
+            echo "$a slice OK"
+          done
 
       - uses: actions/upload-artifact@v7
         with:
