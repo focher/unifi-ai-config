@@ -199,9 +199,17 @@ jobs:
             echo "$a slice OK"
           done
 
+      - name: Package as .app inside a DMG
+        run: |
+          VER=$(.venv-u2/bin/python -c "import backend; print(backend.__version__)")
+          bash packaging/macos_package.sh out/unifi-ai-auditor-macos out/unifi-ai-auditor-macos.dmg "$VER"
+          # Ship the DMG (full .app) as the macOS deliverable; drop the bare binary.
+          rm -f out/unifi-ai-auditor-macos
+          ls -la out/
+
       - uses: actions/upload-artifact@v7
         with:
-          name: unifi-ai-auditor-macos
+          name: unifi-ai-auditor-macos-dmg
           path: out/*
 
       - name: Attach to release

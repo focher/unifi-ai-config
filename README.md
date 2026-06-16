@@ -82,18 +82,20 @@ The published binaries are **code-signed to the extent possible without paid
 certificates**. What that means per platform, and how to launch them:
 
 ### macOS
-The universal binary is **ad-hoc signed** — it is valid and not flagged as
-"damaged", and runs on both Apple Silicon and Intel. Because it is not signed with
-an Apple **Developer ID** and notarized, Gatekeeper still quarantines it on first
-download. Clear the quarantine once:
+Download `unifi-ai-auditor-macos.dmg`, open it, and drag **UniFi AI Config
+Auditor.app** into **Applications**. The `.app` is a fully self-contained universal
+build (Apple Silicon + Intel) and is **ad-hoc signed** (valid, not "damaged").
+
+Because it is not signed with an Apple **Developer ID** and notarized, Gatekeeper
+quarantines it on first launch — **right-click the app → Open → Open** the first
+time (only once). If you prefer the terminal:
 
 ```bash
-xattr -dr com.apple.quarantine ./unifi-ai-auditor-macos
-chmod +x ./unifi-ai-auditor-macos
-./unifi-ai-auditor-macos
+xattr -dr com.apple.quarantine "/Applications/UniFi AI Config Auditor.app"
 ```
 
-Or right-click the binary in Finder → **Open** → **Open** the first time.
+The app runs as a background server and opens the UI in your browser; quit it from
+its Dock icon (right-click → Quit).
 
 ### Windows
 The `.exe` is **unsigned** (no Authenticode certificate). SmartScreen may warn on
