@@ -271,7 +271,7 @@ async function loadSections(snapshotId) {
 
   sections.forEach((s) => {
     const row = document.createElement("div");
-    const cls = s.error ? "err" : s.count === 0 ? "empty" : "";
+    const cls = s.error ? "err" : s.count === 0 ? "noval" : "";
     row.className = "section-row " + cls;
     row.dataset.key = s.key;
     const cnt = s.error ? "n/a" : `${s.count}`;

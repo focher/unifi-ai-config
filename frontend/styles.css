@@ -68,7 +68,7 @@ button.small { padding: 5px 10px; font-size: 12px; }
 .section-row .grp { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
 .section-row .grp.traffic { background: var(--low); }
 .section-row .lbl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.section-row.empty .lbl, .section-row.err .lbl { color: var(--muted); }
+.section-row.noval .lbl, .section-row.err .lbl { color: var(--muted); }
 .section-row .cnt { color: var(--muted); font-size: 12px; min-width: 28px; text-align: right; flex-shrink: 0; }
 .section-row .acts { display: flex; gap: 4px; flex-shrink: 0; }
 .section-row .acts button { padding: 0 8px; height: 26px; font-size: 12px; line-height: 1; }
