@@ -161,6 +161,11 @@ def _redact(obj: Any) -> Any:
     return obj
 
 
+# Public alias so other modules (e.g. the snapshot-browsing API) can reuse the
+# same secret-masking rules the LLM path applies.
+redact_secrets = _redact
+
+
 def build_payload(collected: dict[str, Any]) -> str:
     cleaned = _redact(_truncate(collected))
     return json.dumps(cleaned, indent=2, default=str)

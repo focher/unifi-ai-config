@@ -230,10 +230,20 @@ async function loadSnapshots(selectId) {
 
 // ---------- collected-data browser ----------
 let currentDataSnapshot = null;
+let openSection = null; // section currently shown in the data modal
+
+const redactOn = () => $("#redactToggle").checked;
+const redactQS = () => (redactOn() ? "redact=true" : "redact=false");
 
 $("#dataSnapshotSelect").addEventListener("change", (e) => loadSections(e.target.value));
 $("#downloadAllBtn").addEventListener("click", () => {
-  if (currentDataSnapshot) window.location = `/api/snapshots/${currentDataSnapshot}/download`;
+  if (currentDataSnapshot)
+    window.location = `/api/snapshots/${currentDataSnapshot}/download?${redactQS()}`;
+});
+// Re-render the open viewer when the toggle flips so it reflects the new setting.
+$("#redactToggle").addEventListener("change", () => {
+  if (openSection && !$("#dataModal").classList.contains("hidden"))
+    browseSection(currentDataSnapshot, openSection);
 });
 
 async function loadSections(snapshotId) {
@@ -259,19 +269,23 @@ async function loadSections(snapshotId) {
     row.querySelector('[data-act="browse"]').addEventListener("click", () => browseSection(snapshotId, s));
     row.querySelector('[data-act="copy"]').addEventListener("click", (e) => copySection(snapshotId, s, e.target));
     row.querySelector('[data-act="download"]').addEventListener("click", () =>
-      window.location = `/api/snapshots/${snapshotId}/section/${s.key}?download=true`);
+      window.location = `/api/snapshots/${snapshotId}/section/${s.key}?download=true&${redactQS()}`);
     box.appendChild(row);
   });
 }
 
 async function fetchSection(snapshotId, key) {
-  const r = await api(`/api/snapshots/${snapshotId}/section/${key}`);
+  const r = await api(`/api/snapshots/${snapshotId}/section/${key}?${redactQS()}`);
   return r.data;
 }
 
 async function browseSection(snapshotId, s) {
+  openSection = s;
+  const redacted = redactOn();
   $("#dataTitle").textContent = s.label;
-  $("#dataMeta").textContent = `${s.group} · ${s.error ? "error" : s.count + " object(s)"} · ${s.key}`;
+  $("#dataMeta").textContent =
+    `${s.group} · ${s.error ? "error" : s.count + " object(s)"} · ${s.key}` +
+    (redacted ? " · secrets redacted" : "");
   $("#dataJson").textContent = "Loading…";
   $("#dataModal").classList.remove("hidden");
   let data;
@@ -281,7 +295,7 @@ async function browseSection(snapshotId, s) {
   $("#dataJson").textContent = text;
   $("#dataCopyBtn").onclick = () => copyText(text, $("#dataCopyBtn"));
   $("#dataDownloadBtn").onclick = () =>
-    window.location = `/api/snapshots/${snapshotId}/section/${s.key}?download=true`;
+    window.location = `/api/snapshots/${snapshotId}/section/${s.key}?download=true&${redactQS()}`;
 }
 
 async function copySection(snapshotId, s, btn) {
@@ -305,8 +319,9 @@ async function copyText(text, btn) {
   setTimeout(() => (btn.textContent = label), 1500);
 }
 
-$("#dataModalClose").addEventListener("click", () => $("#dataModal").classList.add("hidden"));
-$("#dataModal").addEventListener("click", (e) => { if (e.target.id === "dataModal") $("#dataModal").classList.add("hidden"); });
+const closeDataModal = () => { $("#dataModal").classList.add("hidden"); openSection = null; };
+$("#dataModalClose").addEventListener("click", closeDataModal);
+$("#dataModal").addEventListener("click", (e) => { if (e.target.id === "dataModal") closeDataModal(); });
 
 // ---------- STEP 2: analyze ----------
 $("#analyzeBtn").addEventListener("click", async () => {

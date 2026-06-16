@@ -219,34 +219,44 @@ def snapshot_sections(snapshot_id: str) -> list[dict]:
 
 
 @app.get("/api/snapshots/{snapshot_id}/section/{key}")
-def snapshot_section(snapshot_id: str, key: str, download: bool = False):
-    """Return one section's raw collected data (for browse/copy/download)."""
+def snapshot_section(snapshot_id: str, key: str, download: bool = False, redact: bool = False):
+    """Return one section's collected data (for browse/copy/download).
+
+    Pass redact=true to mask secrets (passphrases/keys) using the same rules the
+    LLM analysis path applies.
+    """
     snap = store.get_snapshot(snapshot_id)
     if not snap:
         raise HTTPException(404, "Snapshot not found")
     group, value = _section_value(snap, key)
     if group is None or key not in (snap.data.get(group, {}) or {}):
         raise HTTPException(404, "Section not found in snapshot")
+    if redact:
+        value = analyzer.redact_secrets(value)
     if download:
         body = json.dumps(value, indent=2, default=str)
+        suffix = "-redacted" if redact else ""
         return Response(
             content=body, media_type="application/json",
-            headers={"Content-Disposition": f'attachment; filename="{key}.json"'},
+            headers={"Content-Disposition": f'attachment; filename="{key}{suffix}.json"'},
         )
-    return {"key": key, "label": SECTION_LABELS.get(key, key), "group": group, "data": value}
+    return {"key": key, "label": SECTION_LABELS.get(key, key), "group": group,
+            "redacted": redact, "data": value}
 
 
 @app.get("/api/snapshots/{snapshot_id}/download")
-def snapshot_download(snapshot_id: str):
+def snapshot_download(snapshot_id: str, redact: bool = False):
     """Download the entire snapshot (config + traffic) as one JSON file."""
     snap = store.get_snapshot(snapshot_id)
     if not snap:
         raise HTTPException(404, "Snapshot not found")
-    body = json.dumps(snap.data, indent=2, default=str)
+    data = analyzer.redact_secrets(snap.data) if redact else snap.data
+    body = json.dumps(data, indent=2, default=str)
     stamp = snap.created_at.strftime("%Y%m%d-%H%M%S")
+    suffix = "-redacted" if redact else ""
     return Response(
         content=body, media_type="application/json",
-        headers={"Content-Disposition": f'attachment; filename="unifi-snapshot-{stamp}.json"'},
+        headers={"Content-Disposition": f'attachment; filename="unifi-snapshot-{stamp}{suffix}.json"'},
     )
 
 
