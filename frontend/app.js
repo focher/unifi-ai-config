@@ -76,7 +76,7 @@ function updateProviderUI() {
   $("#apiKeyWrap").style.opacity = local ? ".5" : "1";
 }
 
-async function refreshModels() {
+async function refreshModels(userInitiated = false) {
   const provider = $("#l_provider").value;
   const local = ["ollama", "lmstudio"].includes(provider);
   $("#modelStatus").textContent = "Detecting…"; $("#modelStatus").className = "status";
@@ -95,8 +95,14 @@ async function refreshModels() {
     options.forEach((m) => {
       const o = document.createElement("option"); o.value = m; dl.appendChild(o);
     });
-    // Nudge the input to drop its cached suggestion popup so the new list shows.
+    // On an explicit Detect for a local runtime, reconcile the model field with
+    // what was actually found — otherwise a stale value filters the datalist and
+    // hides the new models until the field is manually cleared.
     const inp = $("#l_model");
+    if (userInitiated && local && r.installed.length && !r.installed.includes(inp.value.trim())) {
+      inp.value = r.installed.length === 1 ? r.installed[0] : "";
+    }
+    // Nudge the input to drop its cached suggestion popup so the new list shows.
     inp.removeAttribute("list"); void inp.offsetWidth; inp.setAttribute("list", "modelList");
     $("#l_base").placeholder = r.default_base;
     // If the entered URL was repaired (e.g. slash-before-port), reflect the fix.
@@ -118,8 +124,8 @@ async function refreshModels() {
   } catch (e) { $("#modelStatus").textContent = e.message; $("#modelStatus").className = "status err"; }
 }
 
-$("#l_provider").addEventListener("change", () => { updateProviderUI(); refreshModels(); });
-$("#refreshModels").addEventListener("click", refreshModels);
+$("#l_provider").addEventListener("change", () => { updateProviderUI(); refreshModels(true); });
+$("#refreshModels").addEventListener("click", () => refreshModels(true));
 
 $("#saveBtn").addEventListener("click", async () => {
   $("#saveStatus").textContent = "Saving…"; $("#saveStatus").className = "status";
